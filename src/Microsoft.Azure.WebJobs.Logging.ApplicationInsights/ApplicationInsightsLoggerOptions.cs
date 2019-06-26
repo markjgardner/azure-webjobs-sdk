@@ -39,6 +39,18 @@ namespace Microsoft.Azure.WebJobs.Logging.ApplicationInsights
         public bool EnablePerformanceCountersCollection { get; set; } = true;
 
         /// <summary>
+        /// Gets or sets the flag that enables quick pulse collection.
+        /// Enabled by default.
+        /// </summary>
+        public bool EnableQuickPulse { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets the flag that enables dependency tracking.
+        /// Enabled by default.
+        /// </summary>
+        public bool EnableDependencyTracking { get; set; } = true;
+
+        /// <summary>
         /// Gets or sets HTTP request collection options. 
         /// </summary>
         public HttpAutoCollectionOptions HttpAutoCollectionOptions { get; set; } = new HttpAutoCollectionOptions();
@@ -97,7 +109,9 @@ namespace Microsoft.Azure.WebJobs.Logging.ApplicationInsights
                 { nameof(SamplingSettings), sampling },
                 { nameof(SnapshotConfiguration), snapshot },
                 { nameof(EnablePerformanceCountersCollection), EnablePerformanceCountersCollection},
-                { nameof(HttpAutoCollectionOptions), httpOptions},
+                { nameof(EnableQuickPulse), EnableQuickPulse },
+                { nameof(EnableDependencyTracking), EnableDependencyTracking },
+                { nameof(HttpAutoCollectionOptions), httpOptions}
             };
 
             return options.ToString(Formatting.Indented);
