@@ -87,7 +87,7 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
             _eventCollector = eventCollector;
         }
 
-        public async Task<JobHostContext> Create(CancellationToken shutdownToken, CancellationToken cancellationToken)
+        public async Task<JobHostContext> Create(JobHost host, CancellationToken shutdownToken, CancellationToken cancellationToken)
         {
             using (CancellationTokenSource combinedCancellationSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, shutdownToken))
             {
@@ -99,7 +99,13 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
                 _loggerFactory.AddProvider(new FunctionOutputLoggerProvider());
 
                 IFunctionIndex functions = await _functionIndexProvider.GetAsync(combinedCancellationToken);
-                IListenerFactory functionsListenerFactory = new HostListenerFactory(functions.ReadAll(), _singletonManager, _activator, _nameResolver, _loggerFactory, _jobHostOptions.Value.AllowPartialHostStartup);
+                Action listenersCreatedCallback = () =>
+                {
+                    // only trigger HostInitialized after all listeners are created (but before
+                    // they are started).
+                    host.OnHostInitialized();
+                };
+                IListenerFactory functionsListenerFactory = new HostListenerFactory(functions.ReadAll(), _singletonManager, _activator, _nameResolver, _loggerFactory, listenersCreatedCallback, _jobHostOptions.Value.AllowPartialHostStartup);
 
                 string hostId = await _hostIdProvider.GetHostIdAsync(cancellationToken);
                 bool dashboardLoggingEnabled = _dashboardLoggingSetup.Setup(functions, functionsListenerFactory, out IFunctionExecutor hostCallExecutor,
