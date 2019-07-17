@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs.Host.Bindings.Path;
 using Microsoft.Azure.WebJobs.Host.Indexers;
+using Microsoft.Azure.WebJobs.Host.Scale;
 using Microsoft.Azure.WebJobs.Logging;
 using Microsoft.Extensions.Logging;
 
@@ -26,9 +27,10 @@ namespace Microsoft.Azure.WebJobs.Host.Listeners
         private readonly ILoggerFactory _loggerFactory;
         private readonly ILogger _logger;
         private readonly bool _allowPartialHostStartup;
+        private readonly ITriggerScaleMonitorProvider _monitorProvider;
 
         public HostListenerFactory(IEnumerable<IFunctionDefinition> functionDefinitions, SingletonManager singletonManager, IJobActivator activator,
-            INameResolver nameResolver, ILoggerFactory loggerFactory, bool allowPartialHostStartup = false)
+            INameResolver nameResolver, ILoggerFactory loggerFactory, ITriggerScaleMonitorProvider monitorProvider, bool allowPartialHostStartup = false)
         {
             _functionDefinitions = functionDefinitions;
             _singletonManager = singletonManager;
@@ -37,6 +39,7 @@ namespace Microsoft.Azure.WebJobs.Host.Listeners
             _loggerFactory = loggerFactory;
             _logger = _loggerFactory?.CreateLogger(LogCategories.Startup);
             _allowPartialHostStartup = allowPartialHostStartup;
+            _monitorProvider = monitorProvider;
         }
 
         public async Task<IListener> CreateAsync(CancellationToken cancellationToken)
@@ -60,6 +63,12 @@ namespace Microsoft.Azure.WebJobs.Host.Listeners
                 }
 
                 IListener listener = await listenerFactory.CreateAsync(cancellationToken);
+
+                // for each listener that is a scale monitor, register it with the provider
+                if (listener is ITriggerScaleMonitor scaleMonitor)
+                {
+                    _monitorProvider.Register(scaleMonitor);
+                }
 
                 // if the listener is a Singleton, wrap it with our SingletonListener
                 SingletonAttribute singletonAttribute = SingletonManager.GetListenerSingletonOrNull(listener.GetType(), functionDefinition.Descriptor);

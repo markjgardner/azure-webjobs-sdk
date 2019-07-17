@@ -2,20 +2,23 @@
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs.Host.Executors;
 using Microsoft.Azure.WebJobs.Host.Listeners;
+using Microsoft.Azure.WebJobs.Host.Scale;
 using Microsoft.Azure.WebJobs.Host.Timers;
 using Microsoft.Extensions.Logging;
 using Microsoft.WindowsAzure.Storage;
 using Microsoft.WindowsAzure.Storage.Queue;
+using System.Diagnostics;
 
 namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
 {
-    internal sealed class QueueListener : IListener, ITaskSeriesCommand, INotificationCommand
+    internal sealed class QueueListener : IListener, ITaskSeriesCommand, INotificationCommand, ITriggerScaleMonitor<QueueTriggerMetrics>
     {
         private readonly ITaskSeriesTimer _timer;
         private readonly IDelayStrategy _delayStrategy;
@@ -29,6 +32,8 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
         private readonly QueuesOptions _queueOptions;
         private readonly QueueProcessor _queueProcessor;
         private readonly TimeSpan _visibilityTimeout;
+        private readonly ILogger<QueueListener> _logger;
+        private readonly string _functionId;
 
         private bool? _queueExists;
         private bool _foundMessageSinceLastDelay;
@@ -43,6 +48,7 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
             SharedQueueWatcher sharedWatcher,
             QueuesOptions queueOptions,
             IQueueProcessorFactory queueProcessorFactory,
+            string functionId,
             TimeSpan? maxPollingInterval = null)
         {
             if (queueOptions == null)
@@ -71,6 +77,8 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
             _triggerExecutor = triggerExecutor;
             _exceptionHandler = exceptionHandler;
             _queueOptions = queueOptions;
+            _logger = loggerFactory.CreateLogger<QueueListener>();
+            _functionId = functionId;
 
             // if the function runs longer than this, the invisibility will be updated
             // on a timer periodically for the duration of the function execution
@@ -350,6 +358,188 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
             }
 
             return queueProcessor;
+        }
+
+        public string FunctionId
+        {
+            get
+            {
+                return _functionId;
+            }
+        }
+
+        public string TriggerType
+        {
+            get
+            {
+                return "QueueTrigger";
+            }
+        }
+
+        public string ResourceId
+        {
+            get
+            {
+                return _queue.Name;
+            }
+        }
+
+        async Task<TriggerMetrics> ITriggerScaleMonitor.GetMetricsAsync()
+        {
+            return await GetMetricsAsync();
+        }
+
+        public async Task<QueueTriggerMetrics> GetMetricsAsync()
+        {
+            // TODO: only return metrics if listener was started successfully?
+            // Note we'll only be returning metrics for actively running functions which is 
+            // what we want
+
+            // TODO: param for ignoring failures?
+            int queueLength = await _queue.TryGetLengthAsync(_logger);
+            if (queueLength < 0)
+            {
+                // TODO: how to handle this situation
+                queueLength = 0; // Set the queue length to 0 so that metrics are published and we attempt to scale in
+            }
+
+            TimeSpan queueTime = TimeSpan.Zero;
+            if (queueLength > 0)
+            {
+                CloudQueueMessage message = await _queue.PeekMessageAsync();
+                if (message != null)
+                {
+                    if (message.InsertionTime.HasValue)
+                    {
+                        queueTime = DateTime.UtcNow.Subtract(message.InsertionTime.Value.DateTime);
+                    }
+                }
+                else
+                {
+                    // ApproximateMessageCount often returns a stale value, especially when the queue is empty.
+                    queueLength = 0;
+                }
+            }
+
+            return new QueueTriggerMetrics
+            {
+                QueueLength = queueLength,
+                QueueTime = queueTime,
+                TimeStamp = DateTime.UtcNow
+            };
+        }
+
+        ScaleStatus ITriggerScaleMonitor.GetScaleStatus(ScaleStatusContext context)
+        {
+            ScaleStatus status = new ScaleStatus
+            {
+                Vote = ScaleVote.None
+            };
+
+            const int NumberOfSamplesToConsider = 5;
+            var metrics = context.Metrics.Cast<QueueTriggerMetrics>().ToList();
+
+            // At least 5 samples are required to make a scale decision.
+            if (metrics.Count() < NumberOfSamplesToConsider)
+            {
+                return status;
+            }
+
+            // Maintain a minimum ratio of 1 worker per 1,000 queue messages.
+            long latestQueueLength = metrics[metrics.Count() - 1].QueueLength;
+            if (latestQueueLength > context.WorkerCount * 1000)
+            {
+                status.Vote = ScaleVote.ScaleOut;
+                _logger.LogInformation($"QueueLength ({latestQueueLength}) > workerCount ({context.WorkerCount}) * 1,000");
+                _logger.LogInformation($"Length of queue ({_queue.Name}, {latestQueueLength}) is too high relative to the number of instances ({context.WorkerCount}).");
+                return status;
+            }
+
+            // Check to see if the trigger source has been empty for a while. Only if all trigger sources are empty do we scale down.
+            bool queueIsIdle = metrics.All(p => p.QueueLength == 0);
+            if (queueIsIdle)
+            {
+                status.Vote = ScaleVote.ScaleIn;
+                _logger.LogInformation($"Queue '{_queue.Name}' is idle");
+                return status;
+            }
+
+            // Samples are in chronological order. Check for a continuous increase in time or length.
+            // If detected, this results in an automatic scale out for the site container.
+            // TODO: why this metrics[0].QueueLength > 0 check here and below?
+            bool queueLengthIncreasing =
+                IsTrueForLast(
+                    metrics,
+                    NumberOfSamplesToConsider,
+                    (prev, next) => prev.QueueLength < next.QueueLength) && metrics[0].QueueLength > 0;
+            if (queueLengthIncreasing)
+            {
+                status.Vote = ScaleVote.ScaleOut;
+                _logger.LogInformation($"Queue '{_queue.Name}' is growing in length");
+                return status;
+            }
+
+            bool queueTimeIncreasing =
+                IsTrueForLast(
+                    metrics,
+                    NumberOfSamplesToConsider,
+                    (prev, next) => prev.QueueTime <= next.QueueTime) && metrics[0].QueueTime > TimeSpan.Zero && metrics[0].QueueTime < metrics[NumberOfSamplesToConsider - 1].QueueTime;
+            if (queueTimeIncreasing)
+            {
+                status.Vote = ScaleVote.ScaleOut;
+                _logger.LogInformation($"Queue time is increasing for '{_queue.Name}'");
+                return status;
+            }
+
+            bool queueLengthDecreasing =
+                IsTrueForLast(
+                    metrics,
+                    NumberOfSamplesToConsider,
+                    (prev, next) => prev.QueueLength > next.QueueLength);
+            if (queueLengthDecreasing)
+            {
+                status.Vote = ScaleVote.ScaleIn;
+                _logger.LogInformation($"The number of pending events for '{_queue.Name}' is decreasing");
+                return status;
+            }
+
+            bool queueTimeDecreasing = IsTrueForLast(
+                metrics,
+                NumberOfSamplesToConsider,
+                (prev, next) => prev.QueueTime > next.QueueTime);
+
+            if (queueTimeDecreasing)
+            {
+                status.Vote = ScaleVote.ScaleIn;
+                _logger.LogInformation($"Time messages spend in '{_queue.Name}' is decreasing");
+                return status;
+            }
+
+            _logger.LogInformation($"Queue '{_queue.Name}' is steady");
+
+            return status;
+        }
+
+        public ScaleStatus GetScaleStatus(ScaleStatusContext<QueueTriggerMetrics> context)
+        {
+            return ((ITriggerScaleMonitor)this).GetScaleStatus(context);
+        }
+
+        private static bool IsTrueForLast(IList<QueueTriggerMetrics> samples, int count, Func<QueueTriggerMetrics, QueueTriggerMetrics, bool> predicate)
+        {
+            Debug.Assert(count > 1, "count must be greater than 1.");
+            Debug.Assert(count <= samples.Count, "count must be less than or equal to the list size.");
+
+            // Walks through the list from left to right starting at len(samples) - count.
+            for (int i = samples.Count - count; i < samples.Count - 1; i++)
+            {
+                if (!predicate(samples[i], samples[i + 1]))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
     }
 }

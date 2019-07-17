@@ -25,6 +25,7 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
         private readonly ILoggerFactory _loggerFactory;
         private readonly ITriggeredFunctionExecutor _executor;
         private readonly IQueueProcessorFactory _queueProcessorFactory;
+        private readonly string _functionId;
 
         public QueueListenerFactory(CloudQueue queue,
             QueuesOptions queueOptions,
@@ -32,7 +33,8 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
             SharedQueueWatcher messageEnqueuedWatcherSetter,
             ILoggerFactory loggerFactory,
             ITriggeredFunctionExecutor executor,
-            IQueueProcessorFactory queueProcessorFactory)
+            IQueueProcessorFactory queueProcessorFactory,
+            string functionId)
         {
             _queue = queue ?? throw new ArgumentNullException(nameof(queue));
             _queueOptions = queueOptions ?? throw new ArgumentNullException(nameof(queueOptions));
@@ -43,6 +45,7 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
             _poisonQueue = CreatePoisonQueueReference(queue.ServiceClient, queue.Name);
             _loggerFactory = loggerFactory;
             _queueProcessorFactory = queueProcessorFactory;
+            _functionId = functionId;
         }
 
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Reliability", "CA2000:Dispose objects before losing scope")]
@@ -51,7 +54,7 @@ namespace Microsoft.Azure.WebJobs.Host.Queues.Listeners
             QueueTriggerExecutor triggerExecutor = new QueueTriggerExecutor(_executor);
 
             IListener listener = new QueueListener(_queue, _poisonQueue, triggerExecutor, _exceptionHandler, _loggerFactory,
-                _messageEnqueuedWatcherSetter, _queueOptions, _queueProcessorFactory);
+                _messageEnqueuedWatcherSetter, _queueOptions, _queueProcessorFactory, _functionId, null);
 
             return Task.FromResult(listener);
         }

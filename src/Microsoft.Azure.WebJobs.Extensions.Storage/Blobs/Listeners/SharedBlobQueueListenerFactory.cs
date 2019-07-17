@@ -16,6 +16,10 @@ namespace Microsoft.Azure.WebJobs.Host.Blobs.Listeners
 {
     internal class SharedBlobQueueListenerFactory : IFactory<SharedBlobQueueListener>
     {
+        // the shared queue listener for blobs doesn't have a corresponding function, so we use
+        // this constant for the scale monitor
+        private const string SharedBlobQueueListenerFunctionId = "SharedBlobQueueListener";
+
         private readonly SharedQueueWatcher _sharedQueueWatcher;
         private readonly CloudQueue _hostBlobTriggerQueue;
         private readonly QueuesOptions _queueOptions;
@@ -59,7 +63,7 @@ namespace Microsoft.Azure.WebJobs.Host.Blobs.Listeners
             // So we define our own custom queue processor factory for this listener
             var queueProcessorFactory = new SharedBlobQueueProcessorFactory(triggerExecutor, _hostBlobTriggerQueue, _loggerFactory, _queueOptions, defaultPoisonQueue);
             IListener listener = new QueueListener(_hostBlobTriggerQueue, defaultPoisonQueue, triggerExecutor, _exceptionHandler, _loggerFactory,
-                _sharedQueueWatcher, _queueOptions, queueProcessorFactory);
+                _sharedQueueWatcher, _queueOptions, queueProcessorFactory, SharedBlobQueueListenerFunctionId);
 
             return new SharedBlobQueueListener(listener, triggerExecutor);
         }

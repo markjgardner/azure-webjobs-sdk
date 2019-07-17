@@ -11,6 +11,7 @@ using Microsoft.Azure.WebJobs.Host.Executors;
 using Microsoft.Azure.WebJobs.Host.Indexers;
 using Microsoft.Azure.WebJobs.Host.Listeners;
 using Microsoft.Azure.WebJobs.Host.Protocols;
+using Microsoft.Azure.WebJobs.Host.Scale;
 using Microsoft.Azure.WebJobs.Host.TestCommon;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -68,7 +69,8 @@ namespace Microsoft.Azure.WebJobs.Host.UnitTests.Listeners
 
             // Create the composite listener - this will fail if any of the
             // function definitions indicate that they are not disabled
-            HostListenerFactory factory = new HostListenerFactory(functions, singletonManager, _jobActivator, null, loggerFactory);
+            var monitorProviderMock = new Mock<ITriggerScaleMonitorProvider>(MockBehavior.Strict);
+            HostListenerFactory factory = new HostListenerFactory(functions, singletonManager, _jobActivator, null, loggerFactory, monitorProviderMock.Object);
             IListener listener = await factory.CreateAsync(CancellationToken.None);
 
             string expectedMessage = $"Function '{descriptor.ShortName}' is disabled";
