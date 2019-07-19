@@ -41,8 +41,9 @@ namespace Microsoft.Azure.WebJobs
             }
             // If the connection string doesn't contain the AccountKey then attempt to use AAD/Oauth to acquire a token
             else {
-                var token = GetStorageBearerToken().GetAwaiter().GetResult();
-                account = new CloudStorageAccount(token, settings["AccountName"], settings["EndpointSuffix"], true);
+                var accountName = settings["AccountName"];
+                var token = GetStorageBearerToken(accountName).GetAwaiter().GetResult();
+                account = new CloudStorageAccount(token, accountName, settings["EndpointSuffix"], true);
             }
             return New(account);
         }
@@ -76,7 +77,7 @@ namespace Microsoft.Azure.WebJobs
             return new NewTokenAndFrequency(token.AccessToken, renewal);
         }
 
-        private static async Task<StorageCredentials> GetStorageBearerToken() {
+        private static async Task<StorageCredentials> GetStorageBearerToken(string accountName) {
             
             var tokenProvider = new AzureServiceTokenProvider();
             
@@ -89,7 +90,13 @@ namespace Microsoft.Azure.WebJobs
                 tokenProvider, 
                 tokenAndFreq.Frequency ?? TimeSpan.MinValue);
 
-            return new StorageCredentials(tokenCredential);
+            var storageCredential = new StorageCredentials(tokenCredential);
+            
+            // Have to use reflection until the auth library supports setting the account name with the Oauth token.
+            // ... or find a different way to expose the AccountName internally.
+            storageCredential.GetType().GetProperty("AccountName").SetValue(storageCredential, accountName, null);
+            
+            return storageCredential;
         }
 
         public virtual bool IsDevelopmentStorageAccount()
